@@ -44,6 +44,9 @@ namespace OF_DL.Entities
         #endregion
 
         bool DownloadPostsIncrementally { get; set; }
+
+        bool DownloadDuplicatedMedia { get; set; }
+        bool EnableDebugLogs { get; set; }
     }
 
 }

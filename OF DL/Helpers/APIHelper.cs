@@ -13,6 +13,7 @@ using OF_DL.Entities.Streams;
 using OF_DL.Enumurations;
 using Org.BouncyCastle.Asn1.Cmp;
 using Serilog;
+using System.Dynamic;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
@@ -26,7 +27,7 @@ namespace OF_DL.Helpers;
 public class APIHelper : IAPIHelper
 {
     private static readonly JsonSerializerSettings m_JsonSerializerSettings;
-    private static readonly IDBHelper m_DBHelper;
+    private readonly IDBHelper m_DBHelper;
     private readonly Auth auth;
 
     static APIHelper()
@@ -35,12 +36,12 @@ public class APIHelper : IAPIHelper
         {
             MissingMemberHandling = MissingMemberHandling.Ignore
         };
-        m_DBHelper = new DBHelper();
     }
 
-    public APIHelper(Auth auth)
+    public APIHelper(Auth auth, IDownloadConfig downloadConfig)
     {
         this.auth = auth;
+        m_DBHelper = new DBHelper(downloadConfig);
     }
 
 
@@ -76,12 +77,14 @@ public class APIHelper : IAPIHelper
     }
 
 
-    private async Task<string?> BuildHeaderAndExecuteRequests(Dictionary<string, string> getParams, string endpoint, HttpClient client)
+    private async Task<string?> BuildHeaderAndExecuteRequests(Dictionary<string, string> getParams, string endpoint, HttpClient client, bool logResponse)
     {
         HttpRequestMessage request = await BuildHttpRequestMessage(getParams, endpoint);
         using var response = await client.SendAsync(request);
         response.EnsureSuccessStatusCode();
         string body = await response.Content.ReadAsStringAsync();
+        if (logResponse)
+            Log.Debug(body);
         return body;
     }
 
@@ -265,14 +268,17 @@ public class APIHelper : IAPIHelper
     }
 
 
-    public async Task<Dictionary<string, int>?> GetAllSubscriptions(Dictionary<string, string> getParams, string endpoint, bool includeRestricted)
+    public async Task<Dictionary<string, int>?> GetAllSubscriptions(Dictionary<string, string> getParams, string endpoint, bool includeRestricted, IDownloadConfig config)
     {
         try
         {
             Dictionary<string, int> users = new();
             Subscriptions subscriptions = new();
 
-            string? body = await BuildHeaderAndExecuteRequests(getParams, endpoint, new HttpClient());
+            if (config.EnableDebugLogs)
+                Log.Debug("Calling GetAllSubscrptions");
+
+            string? body = await BuildHeaderAndExecuteRequests(getParams, endpoint, new HttpClient(), config.EnableDebugLogs);
 
             subscriptions = JsonConvert.DeserializeObject<Subscriptions>(body);
             if (subscriptions != null && subscriptions.hasMore)
@@ -282,7 +288,7 @@ public class APIHelper : IAPIHelper
                 while (true)
                 {
                     Subscriptions newSubscriptions = new();
-                    string? loopbody = await BuildHeaderAndExecuteRequests(getParams, endpoint, new HttpClient());
+                    string? loopbody = await BuildHeaderAndExecuteRequests(getParams, endpoint, new HttpClient(), config.EnableDebugLogs);
 
                     if (!string.IsNullOrEmpty(loopbody) && loopbody.Trim() != "[]")
                     {
@@ -328,7 +334,7 @@ public class APIHelper : IAPIHelper
         return null;
     }
 
-    public async Task<Dictionary<string, int>?> GetActiveSubscriptions(string endpoint, bool includeRestricted)
+    public async Task<Dictionary<string, int>?> GetActiveSubscriptions(string endpoint, bool includeRestricted, IDownloadConfig config)
     {
         Dictionary<string, string> getParams = new()
         {
@@ -338,11 +344,11 @@ public class APIHelper : IAPIHelper
             { "format", "infinite"}
         };
 
-        return await GetAllSubscriptions(getParams, endpoint, includeRestricted);
+        return await GetAllSubscriptions(getParams, endpoint, includeRestricted, config);
     }
 
 
-    public async Task<Dictionary<string, int>?> GetExpiredSubscriptions(string endpoint, bool includeRestricted)
+    public async Task<Dictionary<string, int>?> GetExpiredSubscriptions(string endpoint, bool includeRestricted, IDownloadConfig config)
     {
 
         Dictionary<string, string> getParams = new()
@@ -353,12 +359,18 @@ public class APIHelper : IAPIHelper
             { "format", "infinite"}
         };
 
-        return await GetAllSubscriptions(getParams, endpoint, includeRestricted);
+        if (config.EnableDebugLogs)
+            Log.Debug("Calling GetExpiredSubscriptions - " + endpoint);
+
+        return await GetAllSubscriptions(getParams, endpoint, includeRestricted, config);
     }
 
 
-    public async Task<Dictionary<string, int>> GetLists(string endpoint)
+    public async Task<Dictionary<string, int>> GetLists(string endpoint, IDownloadConfig config)
     {
+        if (config.EnableDebugLogs)
+            Log.Debug("Calling GetLists");
+
         try
         {
             int offset = 0;
@@ -372,7 +384,7 @@ public class APIHelper : IAPIHelper
             Dictionary<string, int> lists = new();
             while (true)
             {
-                string? body = await BuildHeaderAndExecuteRequests(getParams, endpoint, new HttpClient());
+                string? body = await BuildHeaderAndExecuteRequests(getParams, endpoint, new HttpClient(), config.EnableDebugLogs);
 
                 if (body == null)
                 {
@@ -421,8 +433,11 @@ public class APIHelper : IAPIHelper
     }
 
 
-    public async Task<List<string>?> GetListUsers(string endpoint)
+    public async Task<List<string>?> GetListUsers(string endpoint, IDownloadConfig config)
     {
+        if (config.EnableDebugLogs)
+            Log.Debug("Calling GetListUsers - " + endpoint);
+
         try
         {
             int offset = 0;
@@ -435,7 +450,7 @@ public class APIHelper : IAPIHelper
 
             while (true)
             {
-                var body = await BuildHeaderAndExecuteRequests(getParams, endpoint, new HttpClient());
+                var body = await BuildHeaderAndExecuteRequests(getParams, endpoint, new HttpClient(), config.EnableDebugLogs);
                 if (body == null)
                 {
                     break;
@@ -486,6 +501,10 @@ public class APIHelper : IAPIHelper
                                                          IDownloadConfig config,
                                                          List<long> paid_post_ids)
     {
+
+        if (config.EnableDebugLogs)
+            Log.Debug("Calling GetMedia - " + username);
+
         try
         {
             Dictionary<long, string> return_urls = new();
@@ -515,11 +534,14 @@ public class APIHelper : IAPIHelper
                     break;
             }
 
-            var body = await BuildHeaderAndExecuteRequests(getParams, endpoint, new HttpClient());
+            var body = await BuildHeaderAndExecuteRequests(getParams, endpoint, new HttpClient(), config.EnableDebugLogs);
 
 
             if (mediatype == MediaType.Stories)
             {
+                if (config.EnableDebugLogs)
+                    Log.Debug("Media Stories - " + endpoint);
+
                 var stories = JsonConvert.DeserializeObject<List<Stories>>(body, m_JsonSerializerSettings) ?? new List<Stories>();
                 stories = stories.OrderByDescending(x => x.createdAt).ToList();
 
@@ -578,7 +600,10 @@ public class APIHelper : IAPIHelper
                     {
                         Highlights newhighlights = new();
 
-                        var loopbody = await BuildHeaderAndExecuteRequests(getParams, endpoint, GetHttpClient(config));
+                        if (config.EnableDebugLogs)
+                            Log.Debug("Media Highlights - " + endpoint);
+
+                        var loopbody = await BuildHeaderAndExecuteRequests(getParams, endpoint, GetHttpClient(config), config.EnableDebugLogs);
                         newhighlights = JsonConvert.DeserializeObject<Highlights>(loopbody, m_JsonSerializerSettings);
 
                         highlights.list.AddRange(newhighlights.list);
@@ -672,6 +697,9 @@ public class APIHelper : IAPIHelper
 
     public async Task<PaidPostCollection> GetPaidPosts(string endpoint, string folder, string username, IDownloadConfig config, List<long> paid_post_ids)
     {
+        if (config.EnableDebugLogs)
+            Log.Debug("Calling GetPaidPosts - " + username);
+
         try
         {
             Purchased paidPosts = new();
@@ -685,7 +713,7 @@ public class APIHelper : IAPIHelper
                 { "user_id", username }
             };
 
-            var body = await BuildHeaderAndExecuteRequests(getParams, endpoint, GetHttpClient(config));
+            var body = await BuildHeaderAndExecuteRequests(getParams, endpoint, GetHttpClient(config), config.EnableDebugLogs);
             paidPosts = JsonConvert.DeserializeObject<Purchased>(body, m_JsonSerializerSettings);
             if (paidPosts != null && paidPosts.hasMore)
             {
@@ -695,7 +723,7 @@ public class APIHelper : IAPIHelper
 
                     Purchased newPaidPosts = new();
 
-                    var loopbody = await BuildHeaderAndExecuteRequests(getParams, endpoint, GetHttpClient(config));
+                    var loopbody = await BuildHeaderAndExecuteRequests(getParams, endpoint, GetHttpClient(config), config.EnableDebugLogs);
                     newPaidPosts = JsonConvert.DeserializeObject<Purchased>(loopbody, m_JsonSerializerSettings);
 
                     paidPosts.list.AddRange(newPaidPosts.list);
@@ -735,7 +763,7 @@ public class APIHelper : IAPIHelper
                     }
                     await m_DBHelper.AddPost(folder, purchase.id, purchase.text != null ? purchase.text : string.Empty, purchase.price != null ? purchase.price.ToString() : "0", purchase.price != null && purchase.isOpened ? true : false, purchase.isArchived.HasValue ? purchase.isArchived.Value : false, purchase.createdAt != null ? purchase.createdAt.Value : purchase.postedAt.Value);
                     paidPostCollection.PaidPostObjects.Add(purchase);
-                    foreach (Purchased.Medium medium in purchase.media)
+                    foreach (Messages.Medium medium in purchase.media)
                     {
                         if (!previewids.Contains(medium.id))
                         {
@@ -826,6 +854,9 @@ public class APIHelper : IAPIHelper
 
     public async Task<PostCollection> GetPosts(string endpoint, string folder, IDownloadConfig config, List<long> paid_post_ids)
     {
+        if (config.EnableDebugLogs)
+            Log.Debug("Calling GetPosts - " + endpoint);
+
         try
         {
             Post posts = new();
@@ -861,7 +892,7 @@ public class APIHelper : IAPIHelper
                 ref getParams,
                 downloadAsOf);
 
-            var body = await BuildHeaderAndExecuteRequests(getParams, endpoint, new HttpClient());
+            var body = await BuildHeaderAndExecuteRequests(getParams, endpoint, new HttpClient(), config.EnableDebugLogs);
             posts = JsonConvert.DeserializeObject<Post>(body, m_JsonSerializerSettings);
             if (posts != null && posts.hasMore)
             {
@@ -875,7 +906,7 @@ public class APIHelper : IAPIHelper
                 {
                     Post newposts = new();
 
-                    var loopbody = await BuildHeaderAndExecuteRequests(getParams, endpoint, GetHttpClient(config));
+                    var loopbody = await BuildHeaderAndExecuteRequests(getParams, endpoint, GetHttpClient(config), config.EnableDebugLogs);
                     newposts = JsonConvert.DeserializeObject<Post>(loopbody, m_JsonSerializerSettings);
 
                     posts.list.AddRange(newposts.list);
@@ -1003,6 +1034,9 @@ public class APIHelper : IAPIHelper
     }
     public async Task<SinglePostCollection> GetPost(string endpoint, string folder, IDownloadConfig config)
     {
+        if (config.EnableDebugLogs)
+            Log.Debug("Calling GetPost - " + endpoint);
+
         try
         {
             SinglePost singlePost = new();
@@ -1012,7 +1046,7 @@ public class APIHelper : IAPIHelper
                 { "skip_users", "all" }
             };
 
-            var body = await BuildHeaderAndExecuteRequests(getParams, endpoint, new HttpClient());
+            var body = await BuildHeaderAndExecuteRequests(getParams, endpoint, new HttpClient(), config.EnableDebugLogs);
             singlePost = JsonConvert.DeserializeObject<SinglePost>(body, m_JsonSerializerSettings);
 
             if (singlePost != null)
@@ -1114,7 +1148,10 @@ public class APIHelper : IAPIHelper
 
     public async Task<StreamsCollection> GetStreams(string endpoint, string folder, IDownloadConfig config, List<long> paid_post_ids)
     {
-        try
+        if (config.EnableDebugLogs)
+            Log.Debug("Calling GetStreams - " + endpoint);
+
+            try
         {
             Streams streams = new();
             StreamsCollection streamsCollection = new();
@@ -1137,7 +1174,7 @@ public class APIHelper : IAPIHelper
                 ref getParams,
                 config.CustomDate);
 
-            var body = await BuildHeaderAndExecuteRequests(getParams, endpoint, new HttpClient());
+            var body = await BuildHeaderAndExecuteRequests(getParams, endpoint, new HttpClient(), config.EnableDebugLogs);
             streams = JsonConvert.DeserializeObject<Streams>(body, m_JsonSerializerSettings);
             if (streams != null && streams.hasMore)
             {
@@ -1151,7 +1188,7 @@ public class APIHelper : IAPIHelper
                 {
                     Streams newstreams = new();
 
-                    var loopbody = await BuildHeaderAndExecuteRequests(getParams, endpoint, GetHttpClient(config));
+                    var loopbody = await BuildHeaderAndExecuteRequests(getParams, endpoint, GetHttpClient(config), config.EnableDebugLogs);
                     newstreams = JsonConvert.DeserializeObject<Streams>(loopbody, m_JsonSerializerSettings);
 
                     streams.list.AddRange(newstreams.list);
@@ -1254,6 +1291,9 @@ public class APIHelper : IAPIHelper
 
     public async Task<ArchivedCollection> GetArchived(string endpoint, string folder, IDownloadConfig config)
     {
+        if (config.EnableDebugLogs)
+            Log.Debug("Calling GetArchived - " + endpoint);
+
         try
         {
             Archived archived = new();
@@ -1280,7 +1320,7 @@ public class APIHelper : IAPIHelper
                 ref getParams,
                 config.CustomDate);
 
-            var body = await BuildHeaderAndExecuteRequests(getParams, endpoint, GetHttpClient(config));
+            var body = await BuildHeaderAndExecuteRequests(getParams, endpoint, GetHttpClient(config), config.EnableDebugLogs);
             archived = JsonConvert.DeserializeObject<Archived>(body, m_JsonSerializerSettings);
             if (archived != null && archived.hasMore)
             {
@@ -1292,7 +1332,7 @@ public class APIHelper : IAPIHelper
                 {
                     Archived newarchived = new();
 
-                    var loopbody = await BuildHeaderAndExecuteRequests(getParams, endpoint, GetHttpClient(config));
+                    var loopbody = await BuildHeaderAndExecuteRequests(getParams, endpoint, GetHttpClient(config), config.EnableDebugLogs);
                     newarchived = JsonConvert.DeserializeObject<Archived>(loopbody, m_JsonSerializerSettings);
 
                     archived.list.AddRange(newarchived.list);
@@ -1386,6 +1426,9 @@ public class APIHelper : IAPIHelper
 
     public async Task<MessageCollection> GetMessages(string endpoint, string folder, IDownloadConfig config)
     {
+        if (config.EnableDebugLogs)
+            Log.Debug("Calling GetMessages - " + endpoint);
+
         try
         {
             Messages messages = new();
@@ -1397,7 +1440,7 @@ public class APIHelper : IAPIHelper
                 { "order", "desc" }
             };
 
-            var body = await BuildHeaderAndExecuteRequests(getParams, endpoint, GetHttpClient(config));
+            var body = await BuildHeaderAndExecuteRequests(getParams, endpoint, GetHttpClient(config), config.EnableDebugLogs);
             messages = JsonConvert.DeserializeObject<Messages>(body, m_JsonSerializerSettings);
             if (messages.hasMore)
             {
@@ -1406,7 +1449,7 @@ public class APIHelper : IAPIHelper
                 {
                     Messages newmessages = new();
 
-                    var loopbody = await BuildHeaderAndExecuteRequests(getParams, endpoint, GetHttpClient(config));
+                    var loopbody = await BuildHeaderAndExecuteRequests(getParams, endpoint, GetHttpClient(config), config.EnableDebugLogs);
                     newmessages = JsonConvert.DeserializeObject<Messages>(loopbody, m_JsonSerializerSettings);
 
                     messages.list.AddRange(newmessages.list);
@@ -1570,9 +1613,176 @@ public class APIHelper : IAPIHelper
         return null;
     }
 
+    public async Task<PaidMessageCollection> GetPaidMessage(string endpoint, string folder, IDownloadConfig config)
+    {
+        if (config.EnableDebugLogs)
+            Log.Debug("Calling GetPaidMessage - " + endpoint);
+
+        try
+        {
+            SingleMessage message = new();
+            PaidMessageCollection paidMessageCollection = new();
+            int post_limit = 50;
+            Dictionary<string, string> getParams = new()
+            {
+                { "limit", post_limit.ToString() },
+                { "order", "desc" }
+            };
+
+            var body = await BuildHeaderAndExecuteRequests(getParams, endpoint, GetHttpClient(config), config.EnableDebugLogs);
+            message = JsonConvert.DeserializeObject<SingleMessage>(body, m_JsonSerializerSettings);
+
+            await m_DBHelper.AddMessage(folder, message.id, message.text != null ? message.text : string.Empty, message.price != null ? message.price.ToString() : "0", true, false, message.createdAt.HasValue ? message.createdAt.Value : DateTime.Now, message.fromUser != null && message.fromUser.id != null ? message.fromUser.id.Value : int.MinValue);
+
+            List<long> messagePreviewIds = new();
+            if (message.previews != null && message.previews.Count > 0)
+            {
+                foreach (var id in message.previews)
+                {
+                    if (!messagePreviewIds.Contains((long)id))
+                    {
+                        messagePreviewIds.Add((long)id);
+                    }
+                }
+            }
+
+            if (message.media != null && message.media.Count > 0)
+                {
+                    foreach (Messages.Medium medium in message.media)
+                    {
+                        if (medium.canView && medium.source.source != null && !medium.source.source.Contains("upload"))
+                        {
+                            if (medium.type == "photo" && !config.DownloadImages)
+                            {
+                                continue;
+                            }
+                            if (medium.type == "video" && !config.DownloadVideos)
+                            {
+                                continue;
+                            }
+                            if (medium.type == "gif" && !config.DownloadVideos)
+                            {
+                                continue;
+                            }
+                            if (medium.type == "audio" && !config.DownloadAudios)
+                            {
+                                continue;
+                            }
+                            
+                            if (!paidMessageCollection.PaidMessages.ContainsKey(medium.id))
+                            {
+                                await m_DBHelper.AddMedia(folder, medium.id, message.id, medium.source.source, null, null, null, "Messages", medium.type == "photo" ? "Images" : (medium.type == "video" || medium.type == "gif" ? "Videos" : (medium.type == "audio" ? "Audios" : null)), messagePreviewIds.Contains(medium.id) ? true : false, false, null);
+                                paidMessageCollection.PaidMessages.Add(medium.id, medium.source.source.ToString());
+                                paidMessageCollection.PaidMessageMedia.Add(medium);
+                            }
+                        }
+                        else if (medium.canView && medium.files != null && medium.files.drm != null)
+                        {
+                            if (medium.type == "photo" && !config.DownloadImages)
+                            {
+                                continue;
+                            }
+                            if (medium.type == "video" && !config.DownloadVideos)
+                            {
+                                continue;
+                            }
+                            if (medium.type == "gif" && !config.DownloadVideos)
+                            {
+                                continue;
+                            }
+                            if (medium.type == "audio" && !config.DownloadAudios)
+                            {
+                                continue;
+                            }
+                            
+                            if (!paidMessageCollection.PaidMessages.ContainsKey(medium.id))
+                            {
+                               await m_DBHelper.AddMedia(folder, medium.id, message.id, medium.videoSources._720, null, null, null, "Messages", medium.type == "photo" ? "Images" : (medium.type == "video" || medium.type == "gif" ? "Videos" : (medium.type == "audio" ? "Audios" : null)), messagePreviewIds.Contains(medium.id) ? true : false, false, null);
+                               paidMessageCollection.PaidMessages.Add(medium.id, $"{medium.files.drm.manifest.dash},{medium.files.drm.signature.dash.CloudFrontPolicy},{medium.files.drm.signature.dash.CloudFrontSignature},{medium.files.drm.signature.dash.CloudFrontKeyPairId},{medium.id},{message.id}");
+                               paidMessageCollection.PaidMessageMedia.Add(medium);
+                            }
+                        }
+                    }
+                }
+                else if (messagePreviewIds.Count > 0)
+                {
+                    foreach(Messages.Medium medium in message.media)
+                    {
+                        if (medium.canView && medium.source.source != null && !medium.source.source.Contains("upload") && messagePreviewIds.Contains(medium.id))
+                        {
+                            if (medium.type == "photo" && !config.DownloadImages)
+                            {
+                                continue;
+                            }
+                            if (medium.type == "video" && !config.DownloadVideos)
+                            {
+                                continue;
+                            }
+                            if (medium.type == "gif" && !config.DownloadVideos)
+                            {
+                                continue;
+                            }
+                            if (medium.type == "audio" && !config.DownloadAudios)
+                            {
+                                continue;
+                            }
+                            if (!paidMessageCollection.PaidMessages.ContainsKey(medium.id))
+                            {
+                                await m_DBHelper.AddMedia(folder, medium.id, message.id, medium.source.source, null, null, null, "Messages", medium.type == "photo" ? "Images" : (medium.type == "video" || medium.type == "gif" ? "Videos" : (medium.type == "audio" ? "Audios" : null)), messagePreviewIds.Contains(medium.id) ? true : false, false, null);
+                                paidMessageCollection.PaidMessages.Add(medium.id, medium.source.source.ToString());
+                                paidMessageCollection.PaidMessageMedia.Add(medium);
+                        }
+                    }
+                    else if (medium.canView && medium.files != null && medium.files.drm != null && messagePreviewIds.Contains(medium.id))
+                    {
+                        if (medium.type == "photo" && !config.DownloadImages)
+                        {
+                            continue;
+                        }
+                        if (medium.type == "video" && !config.DownloadVideos)
+                        {
+                            continue;
+                        }
+                        if (medium.type == "gif" && !config.DownloadVideos)
+                        {
+                            continue;
+                        }
+                        if (medium.type == "audio" && !config.DownloadAudios)
+                        {
+                            continue;
+                        }
+                        if (!paidMessageCollection.PaidMessages.ContainsKey(medium.id))
+                        {
+                            await m_DBHelper.AddMedia(folder, medium.id, message.id, medium.files.drm.manifest.dash, null, null, null, "Messages", medium.type == "photo" ? "Images" : (medium.type == "video" || medium.type == "gif" ? "Videos" : (medium.type == "audio" ? "Audios" : null)), messagePreviewIds.Contains(medium.id) ? true : false, false, null);
+                            paidMessageCollection.PaidMessages.Add(medium.id, $"{medium.files.drm.manifest.dash},{medium.files.drm.signature.dash.CloudFrontPolicy},{medium.files.drm.signature.dash.CloudFrontSignature},{medium.files.drm.signature.dash.CloudFrontKeyPairId},{medium.id},{message.id}");
+                            paidMessageCollection.PaidMessageMedia.Add(medium);
+                        }
+                    }
+                    }
+                }            
+
+            return paidMessageCollection;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("Exception caught: {0}\n\nStackTrace: {1}", ex.Message, ex.StackTrace);
+            Log.Error("Exception caught: {0}\n\nStackTrace: {1}", ex.Message, ex.StackTrace);
+            if (ex.InnerException != null)
+            {
+                Console.WriteLine("\nInner Exception:");
+                Console.WriteLine("Exception caught: {0}\n\nStackTrace: {1}", ex.InnerException.Message, ex.InnerException.StackTrace);
+                Log.Error("Inner Exception: {0}\n\nStackTrace: {1}", ex.InnerException.Message, ex.InnerException.StackTrace);
+            }
+        }
+        return null;
+    }
+
 
     public async Task<PaidMessageCollection> GetPaidMessages(string endpoint, string folder, string username, IDownloadConfig config)
     {
+        if (config.EnableDebugLogs)
+            Log.Debug("Calling GetPaidMessages - " + username);
+
         try
         {
             Purchased paidMessages = new();
@@ -1586,7 +1796,7 @@ public class APIHelper : IAPIHelper
                 { "user_id", username }
             };
 
-            var body = await BuildHeaderAndExecuteRequests(getParams, endpoint, GetHttpClient(config));
+            var body = await BuildHeaderAndExecuteRequests(getParams, endpoint, GetHttpClient(config), config.EnableDebugLogs);
             paidMessages = JsonConvert.DeserializeObject<Purchased>(body, m_JsonSerializerSettings);
             if (paidMessages != null && paidMessages.hasMore)
             {
@@ -1656,7 +1866,7 @@ public class APIHelper : IAPIHelper
                             }
                         }
 
-                        foreach (Purchased.Medium medium in purchase.media)
+                        foreach (Messages.Medium medium in purchase.media)
                         {
                             if (previewids.Count > 0)
                             {
@@ -1788,6 +1998,9 @@ public class APIHelper : IAPIHelper
 
     public async Task<Dictionary<string, int>> GetPurchasedTabUsers(string endpoint, IDownloadConfig config, Dictionary<string, int> users)
     {
+        if (config.EnableDebugLogs)
+            Log.Debug("Calling GetPurchasedTabUsers - " + endpoint);
+
         try
         {
             Dictionary<string, int> purchasedTabUsers = new();
@@ -1800,7 +2013,7 @@ public class APIHelper : IAPIHelper
                 { "format", "infinite" }
             };
 
-            var body = await BuildHeaderAndExecuteRequests(getParams, endpoint, GetHttpClient(config));
+            var body = await BuildHeaderAndExecuteRequests(getParams, endpoint, GetHttpClient(config), config.EnableDebugLogs);
             purchased = JsonConvert.DeserializeObject<Purchased>(body, m_JsonSerializerSettings);
             if (purchased != null && purchased.hasMore)
             {
@@ -1952,6 +2165,9 @@ public class APIHelper : IAPIHelper
 
     public async Task<List<PurchasedTabCollection>> GetPurchasedTab(string endpoint, string folder, IDownloadConfig config, Dictionary<string, int> users)
     {
+        if (config.EnableDebugLogs)
+            Log.Debug("Calling GetPurchasedTab - " + endpoint);
+
         try
         {
             Dictionary<long, List<Purchased.List>> userPurchases = new Dictionary<long, List<Purchased.List>>();
@@ -1965,7 +2181,7 @@ public class APIHelper : IAPIHelper
                 { "format", "infinite" }
             };
 
-            var body = await BuildHeaderAndExecuteRequests(getParams, endpoint, GetHttpClient(config));
+            var body = await BuildHeaderAndExecuteRequests(getParams, endpoint, GetHttpClient(config), config.EnableDebugLogs);
             purchased = JsonConvert.DeserializeObject<Purchased>(body, m_JsonSerializerSettings);
             if (purchased != null && purchased.hasMore)
             {
@@ -2058,7 +2274,7 @@ public class APIHelper : IAPIHelper
                                 }
                                 await m_DBHelper.AddPost(path, purchase.id, purchase.text != null ? purchase.text : string.Empty, purchase.price != null ? purchase.price.ToString() : "0", purchase.price != null && purchase.isOpened ? true : false, purchase.isArchived.HasValue ? purchase.isArchived.Value : false, purchase.createdAt != null ? purchase.createdAt.Value : purchase.postedAt.Value);
                                 purchasedTabCollection.PaidPosts.PaidPostObjects.Add(purchase);
-                                foreach (Purchased.Medium medium in purchase.media)
+                                foreach (Messages.Medium medium in purchase.media)
                                 {
                                     if (medium.type == "photo" && !config.DownloadImages)
                                     {
@@ -2158,7 +2374,7 @@ public class APIHelper : IAPIHelper
                                         }
                                     }
 
-                                    foreach (Purchased.Medium medium in purchase.media)
+                                    foreach (Messages.Medium medium in purchase.media)
                                     {
                                         if (paidMessagePreviewids.Count > 0)
                                         {

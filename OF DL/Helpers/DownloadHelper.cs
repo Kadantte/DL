@@ -22,6 +22,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using static OF_DL.Entities.Lists.UserList;
+using static OF_DL.Entities.Messages.Messages;
 
 namespace OF_DL.Helpers;
 
@@ -36,7 +37,7 @@ public class DownloadHelper : IDownloadHelper
     public DownloadHelper(Auth auth, IDownloadConfig downloadConfig, IFileNameFormatConfig fileNameFormatConfig)
     {
         this.auth = auth;
-        this.m_DBHelper = new DBHelper();
+        this.m_DBHelper = new DBHelper(downloadConfig);
         this._FileNameHelper = new FileNameHelper(auth);
         this.downloadConfig = downloadConfig;
         this.fileNameFormatConfig = fileNameFormatConfig;
@@ -61,6 +62,7 @@ public class DownloadHelper : IDownloadHelper
                                                                      string url,
                                                                      string folder,
                                                                      long media_id,
+                                                                     string api_type,
                                                                      ProgressTask task,
                                                                      string serverFileName,
                                                                      string resolvedFileName)
@@ -76,7 +78,7 @@ public class DownloadHelper : IDownloadHelper
 
             path = UpdatePathBasedOnExtension(folder, path, extension);
 
-            return await ProcessMediaDownload(folder, media_id, url, path, serverFileName, resolvedFileName, extension, task);
+            return await ProcessMediaDownload(folder, media_id, api_type, url, path, serverFileName, resolvedFileName, extension, task);
         }
         catch (Exception ex)
         {
@@ -275,6 +277,7 @@ public class DownloadHelper : IDownloadHelper
     /// <returns>A Task resulting in a boolean indicating whether the media is newly downloaded or not.</returns>
     public async Task<bool> ProcessMediaDownload(string folder,
                                                         long media_id,
+                                                        string api_type,
                                                         string url,
                                                         string path,
                                                         string serverFilename,
@@ -285,10 +288,11 @@ public class DownloadHelper : IDownloadHelper
 
         try
         {
-            if (!await m_DBHelper.CheckDownloaded(folder, media_id))
+            if (!await m_DBHelper.CheckDownloaded(folder, media_id, api_type))
             {
                 return await HandleNewMedia(folder: folder,
                                             media_id: media_id,
+                                            api_type: api_type,
                                             url: url,
                                             path: path,
                                             serverFilename: serverFilename,
@@ -298,10 +302,10 @@ public class DownloadHelper : IDownloadHelper
             }
             else
             {
-                bool status = await HandlePreviouslyDownloadedMediaAsync(folder, media_id, task);
+                bool status = await HandlePreviouslyDownloadedMediaAsync(folder, media_id, api_type, task);
                 if (downloadConfig.RenameExistingFilesWhenCustomFormatIsSelected && (serverFilename != resolvedFilename))
                 {
-                    await HandleRenamingOfExistingFilesAsync(folder, media_id, path, serverFilename, resolvedFilename, extension);
+                    await HandleRenamingOfExistingFilesAsync(folder, media_id, api_type, path, serverFilename, resolvedFilename, extension);
                 }
                 return status;
             }
@@ -317,6 +321,7 @@ public class DownloadHelper : IDownloadHelper
 
     private async Task<bool> HandleRenamingOfExistingFilesAsync(string folder,
                                                                        long media_id,
+                                                                       string api_type,
                                                                        string path,
                                                                        string serverFilename,
                                                                        string resolvedFilename,
@@ -339,9 +344,9 @@ public class DownloadHelper : IDownloadHelper
             return false;
         }
 
-        long size = await m_DBHelper.GetStoredFileSize(folder, media_id);
+        long size = await m_DBHelper.GetStoredFileSize(folder, media_id, api_type);
         var lastModified = File.GetLastWriteTime(fullPathWithTheNewFileName);
-        await m_DBHelper.UpdateMedia(folder, media_id, folder + path, resolvedFilename + extension, size, true, lastModified);
+        await m_DBHelper.UpdateMedia(folder, media_id, api_type, folder + path, resolvedFilename + extension, size, true, lastModified);
         return true;
     }
 
@@ -360,6 +365,7 @@ public class DownloadHelper : IDownloadHelper
     /// <returns>A Task resulting in a boolean indicating whether the media is newly downloaded or not.</returns>
     private async Task<bool> HandleNewMedia(string folder,
                                                    long media_id,
+                                                   string api_type,
                                                    string url,
                                                    string path,
                                                    string serverFilename,
@@ -445,7 +451,7 @@ public class DownloadHelper : IDownloadHelper
         //finaly check which filename we should use. Custom or the server one.
         //if a custom is used, then the servefilename will be different from the resolved filename.
         string finalName = serverFilename == resolvedFilename ? serverFilename : resolvedFilename;
-        await m_DBHelper.UpdateMedia(folder, media_id, folder + path, finalName + extension, fileSizeInBytes, true, lastModified);
+        await m_DBHelper.UpdateMedia(folder, media_id, api_type, folder + path, finalName + extension, fileSizeInBytes, true, lastModified);
         return status;
     }
 
@@ -458,11 +464,11 @@ public class DownloadHelper : IDownloadHelper
     /// <param name="task"></param>
     /// <param name="dBHelper"></param>
     /// <returns>A boolean indicating whether the media is newly downloaded or not.</returns>
-    private async Task<bool> HandlePreviouslyDownloadedMediaAsync(string folder, long media_id, ProgressTask task)
+    private async Task<bool> HandlePreviouslyDownloadedMediaAsync(string folder, long media_id, string api_type, ProgressTask task)
     {
         if (downloadConfig.ShowScrapeSize)
         {
-            long size = await m_DBHelper.GetStoredFileSize(folder, media_id);
+            long size = await m_DBHelper.GetStoredFileSize(folder, media_id, api_type);
             task.Increment(size);
         }
         else
@@ -578,7 +584,7 @@ public class DownloadHelper : IDownloadHelper
 
     #region drm common
 
-    private async Task<bool> DownloadDrmMedia(string user_agent, string policy, string signature, string kvp, string sess, string url, string decryptionKey, string folder, DateTime lastModified, long media_id, ProgressTask task, string customFileName, string filename, string path)
+    private async Task<bool> DownloadDrmMedia(string user_agent, string policy, string signature, string kvp, string sess, string url, string decryptionKey, string folder, DateTime lastModified, long media_id, string api_type, ProgressTask task, string customFileName, string filename, string path)
     {
         int pos1 = decryptionKey.IndexOf(':');
         string decKey = "";
@@ -592,7 +598,7 @@ public class DownloadHelper : IDownloadHelper
         ProcessStartInfo ffmpegStartInfo = new()
         {
             FileName = downloadConfig.FFmpegPath,
-            Arguments = $"-cenc_decryption_key {decKey} -headers \"Cookie:CloudFront-Policy={policy}; CloudFront-Signature={signature}; CloudFront-Key-Pair-Id={kvp}; {sess}\r\nOrigin: https://onlyfans.com\r\nReferer: https://onlyfans.com\r\nUser-Agent: {user_agent}\r\n\r\n\" -i \"{url}\" -codec copy \"{tempFilename}\"",
+            Arguments = $"-cenc_decryption_key {decKey} -headers \"Cookie:CloudFront-Policy={policy}; CloudFront-Signature={signature}; CloudFront-Key-Pair-Id={kvp}; {sess}\r\nOrigin: https://onlyfans.com\r\nReferer: https://onlyfans.com\r\nUser-Agent: {user_agent}\r\n\r\n\" -y -i \"{url}\" -codec copy \"{tempFilename}\"",
             CreateNoWindow = true,
             UseShellExecute = false,
             RedirectStandardOutput = false,
@@ -631,14 +637,14 @@ public class DownloadHelper : IDownloadHelper
         {
             task.Increment(1);
         }
-        await m_DBHelper.UpdateMedia(folder, media_id, folder + path, !string.IsNullOrEmpty(customFileName) ? customFileName + "mp4" : filename + "_source.mp4", fileSizeInBytes, true, lastModified);
+        await m_DBHelper.UpdateMedia(folder, media_id, api_type, folder + path, !string.IsNullOrEmpty(customFileName) ? customFileName + "mp4" : filename + "_source.mp4", fileSizeInBytes, true, lastModified);
 
         return true;
     }
     #endregion
 
     #region normal posts
-    public async Task<bool> DownloadPostMedia(string url, string folder, long media_id, ProgressTask task, string? filenameFormat, Post.List? postInfo, Post.Medium? postMedia, Post.Author? author, Dictionary<string, int> users)
+    public async Task<bool> DownloadPostMedia(string url, string folder, long media_id, string api_type, ProgressTask task, string? filenameFormat, Post.List? postInfo, Post.Medium? postMedia, Post.Author? author, Dictionary<string, int> users)
     {
         string path;
         if (downloadConfig.FolderPerPost && postInfo != null && postInfo?.id is not null && postInfo?.postedAt is not null)
@@ -654,9 +660,9 @@ public class DownloadHelper : IDownloadHelper
         string filename = System.IO.Path.GetFileNameWithoutExtension(uri.LocalPath);
         string resolvedFilename = await GenerateCustomFileName(filename, filenameFormat, postInfo, postMedia, author, folder.Split("/")[^1], users, _FileNameHelper, CustomFileNameOption.ReturnOriginal);
 
-        return await CreateDirectoriesAndDownloadMedia(path, url, folder, media_id, task, filename, resolvedFilename);
+        return await CreateDirectoriesAndDownloadMedia(path, url, folder, media_id, api_type, task, filename, resolvedFilename);
     }
-    public async Task<bool> DownloadPostMedia(string url, string folder, long media_id, ProgressTask task, string? filenameFormat, SinglePost? postInfo, SinglePost.Medium? postMedia, SinglePost.Author? author, Dictionary<string, int> users)
+    public async Task<bool> DownloadPostMedia(string url, string folder, long media_id, string api_type, ProgressTask task, string? filenameFormat, SinglePost? postInfo, SinglePost.Medium? postMedia, SinglePost.Author? author, Dictionary<string, int> users)
     {
         string path;
         if (downloadConfig.FolderPerPost && postInfo != null && postInfo?.id is not null && postInfo?.postedAt is not null)
@@ -672,9 +678,9 @@ public class DownloadHelper : IDownloadHelper
         string filename = System.IO.Path.GetFileNameWithoutExtension(uri.LocalPath);
         string resolvedFilename = await GenerateCustomFileName(filename, filenameFormat, postInfo, postMedia, author, folder.Split("/")[^1], users, _FileNameHelper, CustomFileNameOption.ReturnOriginal);
 
-        return await CreateDirectoriesAndDownloadMedia(path, url, folder, media_id, task, filename, resolvedFilename);
+        return await CreateDirectoriesAndDownloadMedia(path, url, folder, media_id, api_type, task, filename, resolvedFilename);
     }
-    public async Task<bool> DownloadStreamMedia(string url, string folder, long media_id, ProgressTask task, string? filenameFormat, Streams.List? streamInfo, Streams.Medium? streamMedia, Streams.Author? author, Dictionary<string, int> users)
+    public async Task<bool> DownloadStreamMedia(string url, string folder, long media_id, string api_type, ProgressTask task, string? filenameFormat, Streams.List? streamInfo, Streams.Medium? streamMedia, Streams.Author? author, Dictionary<string, int> users)
     {
         string path;
         if (downloadConfig.FolderPerPost && streamInfo != null && streamInfo?.id is not null && streamInfo?.postedAt is not null)
@@ -690,11 +696,11 @@ public class DownloadHelper : IDownloadHelper
         string filename = System.IO.Path.GetFileNameWithoutExtension(uri.LocalPath);
         string resolvedFilename = await GenerateCustomFileName(filename, filenameFormat, streamInfo, streamMedia, author, folder.Split("/")[^1], users, _FileNameHelper, CustomFileNameOption.ReturnOriginal);
 
-        return await CreateDirectoriesAndDownloadMedia(path, url, folder, media_id, task, filename, resolvedFilename);
+        return await CreateDirectoriesAndDownloadMedia(path, url, folder, media_id, api_type, task, filename, resolvedFilename);
     }
 
 
-    public async Task<bool> DownloadMessageMedia(string url, string folder, long media_id, ProgressTask task, string? filenameFormat, Messages.List? messageInfo, Messages.Medium? messageMedia, Messages.FromUser? fromUser, Dictionary<string, int> users)
+    public async Task<bool> DownloadMessageMedia(string url, string folder, long media_id, string api_type, ProgressTask task, string? filenameFormat, Messages.List? messageInfo, Messages.Medium? messageMedia, Messages.FromUser? fromUser, Dictionary<string, int> users)
     {
         string path;
         if (downloadConfig.FolderPerMessage && messageInfo != null && messageInfo?.id is not null && messageInfo?.createdAt is not null)
@@ -708,30 +714,30 @@ public class DownloadHelper : IDownloadHelper
         Uri uri = new(url);
         string filename = System.IO.Path.GetFileNameWithoutExtension(uri.LocalPath);
         string resolvedFilename = await GenerateCustomFileName(filename, filenameFormat, messageInfo, messageMedia, fromUser, folder.Split("/")[^1], users, _FileNameHelper, CustomFileNameOption.ReturnOriginal);
-        return await CreateDirectoriesAndDownloadMedia(path, url, folder, media_id, task, filename, resolvedFilename);
+        return await CreateDirectoriesAndDownloadMedia(path, url, folder, media_id, api_type, task, filename, resolvedFilename);
     }
 
 
-    public async Task<bool> DownloadArchivedMedia(string url, string folder, long media_id, ProgressTask task, string? filenameFormat, Archived.List? messageInfo, Archived.Medium? messageMedia, Archived.Author? author, Dictionary<string, int> users)
+    public async Task<bool> DownloadArchivedMedia(string url, string folder, long media_id, string api_type, ProgressTask task, string? filenameFormat, Archived.List? messageInfo, Archived.Medium? messageMedia, Archived.Author? author, Dictionary<string, int> users)
     {
         string path = "/Archived/Posts/Free";
         Uri uri = new(url);
         string filename = System.IO.Path.GetFileNameWithoutExtension(uri.LocalPath);
         string resolvedFilename = await GenerateCustomFileName(filename, filenameFormat, messageInfo, messageMedia, author, folder.Split("/")[^1], users, _FileNameHelper, CustomFileNameOption.ReturnOriginal);
-        return await CreateDirectoriesAndDownloadMedia(path, url, folder, media_id, task, filename, resolvedFilename);
+        return await CreateDirectoriesAndDownloadMedia(path, url, folder, media_id, api_type, task, filename, resolvedFilename);
     }
 
 
 
-    public async Task<bool> DownloadStoryMedia(string url, string folder, long media_id, ProgressTask task)
+    public async Task<bool> DownloadStoryMedia(string url, string folder, long media_id, string api_type, ProgressTask task)
     {
         string path = "/Stories/Free";
         Uri uri = new(url);
         string filename = System.IO.Path.GetFileNameWithoutExtension(uri.LocalPath);
-        return await CreateDirectoriesAndDownloadMedia(path, url, folder, media_id, task, filename, filename);
+        return await CreateDirectoriesAndDownloadMedia(path, url, folder, media_id, api_type, task, filename, filename);
     }
 
-    public async Task<bool> DownloadPurchasedMedia(string url, string folder, long media_id, ProgressTask task, string? filenameFormat, Purchased.List? messageInfo, Purchased.Medium? messageMedia, Purchased.FromUser? fromUser, Dictionary<string, int> users)
+    public async Task<bool> DownloadPurchasedMedia(string url, string folder, long media_id, string api_type, ProgressTask task, string? filenameFormat, Purchased.List? messageInfo, Medium? messageMedia, Purchased.FromUser? fromUser, Dictionary<string, int> users)
     {
         string path;
         if (downloadConfig.FolderPerPaidMessage && messageInfo != null && messageInfo?.id is not null && messageInfo?.createdAt is not null)
@@ -745,16 +751,17 @@ public class DownloadHelper : IDownloadHelper
         Uri uri = new(url);
         string filename = System.IO.Path.GetFileNameWithoutExtension(uri.LocalPath);
         string resolvedFilename = await GenerateCustomFileName(filename, filenameFormat, messageInfo, messageMedia, fromUser, folder.Split("/")[^1], users, _FileNameHelper, CustomFileNameOption.ReturnOriginal);
-        return await CreateDirectoriesAndDownloadMedia(path, url, folder, media_id, task, filename, resolvedFilename);
+        return await CreateDirectoriesAndDownloadMedia(path, url, folder, media_id, api_type, task, filename, resolvedFilename);
     }
 
     public async Task<bool> DownloadPurchasedPostMedia(string url,
                                                        string folder,
                                                        long media_id,
+                                                       string api_type,
                                                        ProgressTask task,
                                                        string? filenameFormat,
                                                        Purchased.List? messageInfo,
-                                                       Purchased.Medium? messageMedia,
+                                                        Medium? messageMedia,
                                                        Purchased.FromUser? fromUser,
                                                        Dictionary<string, int> users)
     {
@@ -770,7 +777,7 @@ public class DownloadHelper : IDownloadHelper
         Uri uri = new(url);
         string filename = System.IO.Path.GetFileNameWithoutExtension(uri.LocalPath);
         string resolvedFilename = await GenerateCustomFileName(filename, filenameFormat, messageInfo, messageMedia, fromUser, folder.Split("/")[^1], users, _FileNameHelper, CustomFileNameOption.ReturnOriginal);
-        return await CreateDirectoriesAndDownloadMedia(path, url, folder, media_id, task, filename, resolvedFilename);
+        return await CreateDirectoriesAndDownloadMedia(path, url, folder, media_id, api_type, task, filename, resolvedFilename);
     }
 
     #endregion
@@ -839,8 +846,7 @@ public class DownloadHelper : IDownloadHelper
                 List<string> headerMD5Hashes = WidevineClient.Utils.CalculateFolderMD5(folder + headerpath);
 
                 Uri uri = new(headerUrl);
-                string filename = System.IO.Path.GetFileName(uri.LocalPath);
-                string destinationPath = $"{folder}{headerpath}/{filename}";
+                string destinationPath = $"{folder}{headerpath}/";
 
                 var client = new HttpClient();
 
@@ -870,7 +876,6 @@ public class DownloadHelper : IDownloadHelper
                     }
                     File.SetLastWriteTime(destinationPath, response.Content.Headers.LastModified?.LocalDateTime ?? DateTime.Now);
                 }
-
             }
         }
         catch (Exception ex)
@@ -886,7 +891,7 @@ public class DownloadHelper : IDownloadHelper
     }
 
     #region drm posts
-    public async Task<bool> DownloadMessageDRMVideo(string policy, string signature, string kvp, string url, string decryptionKey, string folder, DateTime lastModified, long media_id, ProgressTask task, string? filenameFormat, Messages.List? messageInfo, Messages.Medium? messageMedia, Messages.FromUser? fromUser, Dictionary<string, int> users)
+    public async Task<bool> DownloadMessageDRMVideo(string policy, string signature, string kvp, string url, string decryptionKey, string folder, DateTime lastModified, long media_id, string api_type, ProgressTask task, string? filenameFormat, Messages.List? messageInfo, Messages.Medium? messageMedia, Messages.FromUser? fromUser, Dictionary<string, int> users)
     {
         try
         {
@@ -921,11 +926,11 @@ public class DownloadHelper : IDownloadHelper
                 customFileName = await _FileNameHelper.BuildFilename(filenameFormat, values);
             }
 
-            if (!await m_DBHelper.CheckDownloaded(folder, media_id))
+            if (!await m_DBHelper.CheckDownloaded(folder, media_id, api_type))
             {
                 if (!string.IsNullOrEmpty(customFileName) ? !File.Exists(folder + path + "/" + customFileName + ".mp4") : !File.Exists(folder + path + "/" + filename + "_source.mp4"))
                 {
-                    return await DownloadDrmMedia(auth.USER_AGENT, policy, signature, kvp, auth.COOKIE, url, decryptionKey, folder, lastModified, media_id, task, customFileName, filename, path);
+                    return await DownloadDrmMedia(auth.USER_AGENT, policy, signature, kvp, auth.COOKIE, url, decryptionKey, folder, lastModified, media_id, api_type, task, customFileName, filename, path);
                 }
                 else
                 {
@@ -938,14 +943,14 @@ public class DownloadHelper : IDownloadHelper
                     {
                         task.Increment(1);
                     }
-                    await m_DBHelper.UpdateMedia(folder, media_id, folder + path, !string.IsNullOrEmpty(customFileName) ? customFileName + "mp4" : filename + "_source.mp4", fileSizeInBytes, true, lastModified);
+                    await m_DBHelper.UpdateMedia(folder, media_id, api_type, folder + path, !string.IsNullOrEmpty(customFileName) ? customFileName + "mp4" : filename + "_source.mp4", fileSizeInBytes, true, lastModified);
                 }
             }
             else
             {
                 if (downloadConfig.ShowScrapeSize)
                 {
-                    long size = await m_DBHelper.GetStoredFileSize(folder, media_id);
+                    long size = await m_DBHelper.GetStoredFileSize(folder, media_id, api_type);
                     task.Increment(size);
                 }
                 else
@@ -970,7 +975,7 @@ public class DownloadHelper : IDownloadHelper
     }
 
 
-    public async Task<bool> DownloadPurchasedMessageDRMVideo(string policy, string signature, string kvp, string url, string decryptionKey, string folder, DateTime lastModified, long media_id, ProgressTask task, string? filenameFormat, Purchased.List? messageInfo, Purchased.Medium? messageMedia, Purchased.FromUser? fromUser, Dictionary<string, int> users)
+    public async Task<bool> DownloadPurchasedMessageDRMVideo(string policy, string signature, string kvp, string url, string decryptionKey, string folder, DateTime lastModified, long media_id, string api_type, ProgressTask task, string? filenameFormat, Purchased.List? messageInfo, Medium? messageMedia, Purchased.FromUser? fromUser, Dictionary<string, int> users)
     {
         try
         {
@@ -1004,11 +1009,11 @@ public class DownloadHelper : IDownloadHelper
                 customFileName = await _FileNameHelper.BuildFilename(filenameFormat, values);
             }
 
-            if (!await m_DBHelper.CheckDownloaded(folder, media_id))
+            if (!await m_DBHelper.CheckDownloaded(folder, media_id, api_type))
             {
                 if (!string.IsNullOrEmpty(customFileName) ? !File.Exists(folder + path + "/" + customFileName + ".mp4") : !File.Exists(folder + path + "/" + filename + "_source.mp4"))
                 {
-                    return await DownloadDrmMedia(auth.USER_AGENT, policy, signature, kvp, auth.COOKIE, url, decryptionKey, folder, lastModified, media_id, task, customFileName, filename, path);
+                    return await DownloadDrmMedia(auth.USER_AGENT, policy, signature, kvp, auth.COOKIE, url, decryptionKey, folder, lastModified, media_id, api_type, task, customFileName, filename, path);
                 }
                 else
                 {
@@ -1021,14 +1026,14 @@ public class DownloadHelper : IDownloadHelper
                     {
                         task.Increment(1);
                     }
-                    await m_DBHelper.UpdateMedia(folder, media_id, folder + path, !string.IsNullOrEmpty(customFileName) ? customFileName + "mp4" : filename + "_source.mp4", fileSizeInBytes, true, lastModified);
+                    await m_DBHelper.UpdateMedia(folder, media_id, api_type, folder + path, !string.IsNullOrEmpty(customFileName) ? customFileName + "mp4" : filename + "_source.mp4", fileSizeInBytes, true, lastModified);
                 }
             }
             else
             {
                 if (downloadConfig.ShowScrapeSize)
                 {
-                    long size = await m_DBHelper.GetStoredFileSize(folder, media_id);
+                    long size = await m_DBHelper.GetStoredFileSize(folder, media_id, api_type);
                     task.Increment(size);
                 }
                 else
@@ -1053,7 +1058,7 @@ public class DownloadHelper : IDownloadHelper
     }
 
 
-    public async Task<bool> DownloadPostDRMVideo(string policy, string signature, string kvp, string url, string decryptionKey, string folder, DateTime lastModified, long media_id, ProgressTask task, string? filenameFormat, Post.List? postInfo, Post.Medium? postMedia, Post.Author? author, Dictionary<string, int> users)
+    public async Task<bool> DownloadPostDRMVideo(string policy, string signature, string kvp, string url, string decryptionKey, string folder, DateTime lastModified, long media_id, string api_type, ProgressTask task, string? filenameFormat, Post.List? postInfo, Post.Medium? postMedia, Post.Author? author, Dictionary<string, int> users)
     {
         try
         {
@@ -1087,11 +1092,11 @@ public class DownloadHelper : IDownloadHelper
                 customFileName = await _FileNameHelper.BuildFilename(filenameFormat, values);
             }
 
-            if (!await m_DBHelper.CheckDownloaded(folder, media_id))
+            if (!await m_DBHelper.CheckDownloaded(folder, media_id, api_type))
             {
                 if (!string.IsNullOrEmpty(customFileName) ? !File.Exists(folder + path + "/" + customFileName + ".mp4") : !File.Exists(folder + path + "/" + filename + "_source.mp4"))
                 {
-                    return await DownloadDrmMedia(auth.USER_AGENT, policy, signature, kvp, auth.COOKIE, url, decryptionKey, folder, lastModified, media_id, task, customFileName, filename, path);
+                    return await DownloadDrmMedia(auth.USER_AGENT, policy, signature, kvp, auth.COOKIE, url, decryptionKey, folder, lastModified, media_id, api_type, task, customFileName, filename, path);
                 }
                 else
                 {
@@ -1104,14 +1109,14 @@ public class DownloadHelper : IDownloadHelper
                     {
                         task.Increment(1);
                     }
-                    await m_DBHelper.UpdateMedia(folder, media_id, folder + path, !string.IsNullOrEmpty(customFileName) ? customFileName + "mp4" : filename + "_source.mp4", fileSizeInBytes, true, lastModified);
+                    await m_DBHelper.UpdateMedia(folder, media_id, api_type, folder + path, !string.IsNullOrEmpty(customFileName) ? customFileName + "mp4" : filename + "_source.mp4", fileSizeInBytes, true, lastModified);
                 }
             }
             else
             {
                 if (downloadConfig.ShowScrapeSize)
                 {
-                    long size = await m_DBHelper.GetStoredFileSize(folder, media_id);
+                    long size = await m_DBHelper.GetStoredFileSize(folder, media_id, api_type);
                     task.Increment(size);
                 }
                 else
@@ -1134,7 +1139,7 @@ public class DownloadHelper : IDownloadHelper
         }
         return false;
     }
-    public async Task<bool> DownloadPostDRMVideo(string policy, string signature, string kvp, string url, string decryptionKey, string folder, DateTime lastModified, long media_id, ProgressTask task, string filenameFormat, SinglePost postInfo, SinglePost.Medium postMedia, SinglePost.Author author, Dictionary<string, int> users)
+    public async Task<bool> DownloadPostDRMVideo(string policy, string signature, string kvp, string url, string decryptionKey, string folder, DateTime lastModified, long media_id, string api_type, ProgressTask task, string filenameFormat, SinglePost postInfo, SinglePost.Medium postMedia, SinglePost.Author author, Dictionary<string, int> users)
     {
         try
         {
@@ -1168,11 +1173,11 @@ public class DownloadHelper : IDownloadHelper
                 customFileName = await _FileNameHelper.BuildFilename(filenameFormat, values);
             }
 
-            if (!await m_DBHelper.CheckDownloaded(folder, media_id))
+            if (!await m_DBHelper.CheckDownloaded(folder, media_id, api_type))
             {
                 if (!string.IsNullOrEmpty(customFileName) ? !File.Exists(folder + path + "/" + customFileName + ".mp4") : !File.Exists(folder + path + "/" + filename + "_source.mp4"))
                 {
-                    return await DownloadDrmMedia(auth.USER_AGENT, policy, signature, kvp, auth.COOKIE, url, decryptionKey, folder, lastModified, media_id, task, customFileName, filename, path);
+                    return await DownloadDrmMedia(auth.USER_AGENT, policy, signature, kvp, auth.COOKIE, url, decryptionKey, folder, lastModified, media_id, api_type, task, customFileName, filename, path);
                 }
                 else
                 {
@@ -1185,14 +1190,14 @@ public class DownloadHelper : IDownloadHelper
                     {
                         task.Increment(1);
                     }
-                    await m_DBHelper.UpdateMedia(folder, media_id, folder + path, !string.IsNullOrEmpty(customFileName) ? customFileName + "mp4" : filename + "_source.mp4", fileSizeInBytes, true, lastModified);
+                    await m_DBHelper.UpdateMedia(folder, media_id, api_type, folder + path, !string.IsNullOrEmpty(customFileName) ? customFileName + "mp4" : filename + "_source.mp4", fileSizeInBytes, true, lastModified);
                 }
             }
             else
             {
                 if (downloadConfig.ShowScrapeSize)
                 {
-                    long size = await m_DBHelper.GetStoredFileSize(folder, media_id);
+                    long size = await m_DBHelper.GetStoredFileSize(folder, media_id, api_type);
                     task.Increment(size);
                 }
                 else
@@ -1215,7 +1220,7 @@ public class DownloadHelper : IDownloadHelper
         }
         return false;
     }
-    public async Task<bool> DownloadStreamsDRMVideo(string policy, string signature, string kvp, string url, string decryptionKey, string folder, DateTime lastModified, long media_id, ProgressTask task, string? filenameFormat, Streams.List? streamInfo, Streams.Medium? streamMedia, Streams.Author? author, Dictionary<string, int> users)
+    public async Task<bool> DownloadStreamsDRMVideo(string policy, string signature, string kvp, string url, string decryptionKey, string folder, DateTime lastModified, long media_id, string api_type, ProgressTask task, string? filenameFormat, Streams.List? streamInfo, Streams.Medium? streamMedia, Streams.Author? author, Dictionary<string, int> users)
     {
         try
         {
@@ -1249,11 +1254,11 @@ public class DownloadHelper : IDownloadHelper
                 customFileName = await _FileNameHelper.BuildFilename(filenameFormat, values);
             }
 
-            if (!await m_DBHelper.CheckDownloaded(folder, media_id))
+            if (!await m_DBHelper.CheckDownloaded(folder, media_id, api_type))
             {
                 if (!string.IsNullOrEmpty(customFileName) ? !File.Exists(folder + path + "/" + customFileName + ".mp4") : !File.Exists(folder + path + "/" + filename + "_source.mp4"))
                 {
-                    return await DownloadDrmMedia(auth.USER_AGENT, policy, signature, kvp, auth.COOKIE, url, decryptionKey, folder, lastModified, media_id, task, customFileName, filename, path);
+                    return await DownloadDrmMedia(auth.USER_AGENT, policy, signature, kvp, auth.COOKIE, url, decryptionKey, folder, lastModified, media_id, api_type, task, customFileName, filename, path);
                 }
                 else
                 {
@@ -1266,14 +1271,14 @@ public class DownloadHelper : IDownloadHelper
                     {
                         task.Increment(1);
                     }
-                    await m_DBHelper.UpdateMedia(folder, media_id, folder + path, !string.IsNullOrEmpty(customFileName) ? customFileName + "mp4" : filename + "_source.mp4", fileSizeInBytes, true, lastModified);
+                    await m_DBHelper.UpdateMedia(folder, media_id, api_type, folder + path, !string.IsNullOrEmpty(customFileName) ? customFileName + "mp4" : filename + "_source.mp4", fileSizeInBytes, true, lastModified);
                 }
             }
             else
             {
                 if (downloadConfig.ShowScrapeSize)
                 {
-                    long size = await m_DBHelper.GetStoredFileSize(folder, media_id);
+                    long size = await m_DBHelper.GetStoredFileSize(folder, media_id, api_type);
                     task.Increment(size);
                 }
                 else
@@ -1297,7 +1302,7 @@ public class DownloadHelper : IDownloadHelper
         return false;
     }
 
-    public async Task<bool> DownloadPurchasedPostDRMVideo(string policy, string signature, string kvp, string url, string decryptionKey, string folder, DateTime lastModified, long media_id, ProgressTask task, string? filenameFormat, Purchased.List? postInfo, Purchased.Medium? postMedia, Purchased.FromUser? fromUser, Dictionary<string, int> users)
+    public async Task<bool> DownloadPurchasedPostDRMVideo(string policy, string signature, string kvp, string url, string decryptionKey, string folder, DateTime lastModified, long media_id, string api_type, ProgressTask task, string? filenameFormat, Purchased.List? postInfo, Medium? postMedia, Purchased.FromUser? fromUser, Dictionary<string, int> users)
     {
         try
         {
@@ -1332,11 +1337,11 @@ public class DownloadHelper : IDownloadHelper
                 customFileName = await _FileNameHelper.BuildFilename(filenameFormat, values);
             }
 
-            if (!await m_DBHelper.CheckDownloaded(folder, media_id))
+            if (!await m_DBHelper.CheckDownloaded(folder, media_id, api_type))
             {
                 if (!string.IsNullOrEmpty(customFileName) ? !File.Exists(folder + path + "/" + customFileName + ".mp4") : !File.Exists(folder + path + "/" + filename + "_source.mp4"))
                 {
-                    return await DownloadDrmMedia(auth.USER_AGENT, policy, signature, kvp, auth.COOKIE, url, decryptionKey, folder, lastModified, media_id, task, customFileName, filename, path);
+                    return await DownloadDrmMedia(auth.USER_AGENT, policy, signature, kvp, auth.COOKIE, url, decryptionKey, folder, lastModified, media_id, api_type, task, customFileName, filename, path);
                 }
                 else
                 {
@@ -1349,14 +1354,14 @@ public class DownloadHelper : IDownloadHelper
                     {
                         task.Increment(1);
                     }
-                    await m_DBHelper.UpdateMedia(folder, media_id, folder + path, !string.IsNullOrEmpty(customFileName) ? customFileName + "mp4" : filename + "_source.mp4", fileSizeInBytes, true, lastModified);
+                    await m_DBHelper.UpdateMedia(folder, media_id, api_type, folder + path, !string.IsNullOrEmpty(customFileName) ? customFileName + "mp4" : filename + "_source.mp4", fileSizeInBytes, true, lastModified);
                 }
             }
             else
             {
                 if (downloadConfig.ShowScrapeSize)
                 {
-                    long size = await m_DBHelper.GetStoredFileSize(folder, media_id);
+                    long size = await m_DBHelper.GetStoredFileSize(folder, media_id, api_type);
                     task.Increment(size);
                 }
                 else
@@ -1381,7 +1386,7 @@ public class DownloadHelper : IDownloadHelper
     }
 
 
-    public async Task<bool> DownloadArchivedPostDRMVideo(string policy, string signature, string kvp, string url, string decryptionKey, string folder, DateTime lastModified, long media_id, ProgressTask task, string? filenameFormat, Archived.List? postInfo, Archived.Medium? postMedia, Archived.Author? author, Dictionary<string, int> users)
+    public async Task<bool> DownloadArchivedPostDRMVideo(string policy, string signature, string kvp, string url, string decryptionKey, string folder, DateTime lastModified, long media_id, string api_type, ProgressTask task, string? filenameFormat, Archived.List? postInfo, Archived.Medium? postMedia, Archived.Author? author, Dictionary<string, int> users)
     {
         try
         {
@@ -1407,11 +1412,11 @@ public class DownloadHelper : IDownloadHelper
                 customFileName = await _FileNameHelper.BuildFilename(filenameFormat, values);
             }
 
-            if (!await m_DBHelper.CheckDownloaded(folder, media_id))
+            if (!await m_DBHelper.CheckDownloaded(folder, media_id, api_type))
             {
                 if (!string.IsNullOrEmpty(customFileName) ? !File.Exists(folder + path + "/" + customFileName + ".mp4") : !File.Exists(folder + path + "/" + filename + "_source.mp4"))
                 {
-                    return await DownloadDrmMedia(auth.USER_AGENT, policy, signature, kvp, auth.COOKIE, url, decryptionKey, folder, lastModified, media_id, task, customFileName, filename, path);
+                    return await DownloadDrmMedia(auth.USER_AGENT, policy, signature, kvp, auth.COOKIE, url, decryptionKey, folder, lastModified, media_id, api_type, task, customFileName, filename, path);
                 }
                 else
                 {
@@ -1424,14 +1429,14 @@ public class DownloadHelper : IDownloadHelper
                     {
                         task.Increment(1);
                     }
-                    await m_DBHelper.UpdateMedia(folder, media_id, folder + path, !string.IsNullOrEmpty(customFileName) ? customFileName + "mp4" : filename + "_source.mp4", fileSizeInBytes, true, lastModified);
+                    await m_DBHelper.UpdateMedia(folder, media_id, api_type, folder + path, !string.IsNullOrEmpty(customFileName) ? customFileName + "mp4" : filename + "_source.mp4", fileSizeInBytes, true, lastModified);
                 }
             }
             else
             {
                 if (downloadConfig.ShowScrapeSize)
                 {
-                    long size = await m_DBHelper.GetStoredFileSize(folder, media_id);
+                    long size = await m_DBHelper.GetStoredFileSize(folder, media_id, api_type);
                     task.Increment(size);
                 }
                 else
